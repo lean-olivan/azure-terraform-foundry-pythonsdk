@@ -1,0 +1,14 @@
+# Get SAS URL and upload in one command
+SAS_URL=$(curl -s -X POST "https://lean-foundry3-endpoint-func.azurewebsites.net/api/generate-upload-url" \
+    -H "Content-Type: application/json" \
+    -d '{"filename": "sample.xlsx"}' | jq -r '.sas_url') && \
+curl -X PUT "$SAS_URL" \
+    -H "x-ms-blob-type: BlockBlob" \
+    -H "Content-Type: application/vnd.ms-excel" \
+    --data-binary @sample.xlsx
+
+# Download all files from the container
+az storage blob download-batch \
+  --account-name leanfoundry3endpoint \
+  --source results \
+  --destination ./downloads

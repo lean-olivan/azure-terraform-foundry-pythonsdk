@@ -13,11 +13,13 @@ resource "azurerm_resource_group" "rg" {
 # Create zip file for function deployment
 data "archive_file" "function_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/function"
-  output_path = "${path.module}/function.zip"
-  excludes    = concat(
+  source_dir  = "${path.module}/../function"
+  output_path = "${path.module}/function/function.zip"
+  excludes = concat(
     [".venv"],
-    [for f in fileset("${path.module}/function/.venv", "**") : ".venv/${f}"]
+    ["__pycache__"],
+    [for f in fileset("${path.module}/../function/.venv", "**") : ".venv/${f}"],
+    [for f in fileset("${path.module}/../function/**/__pycache__", "**") : "**/__pycache__/${f}"]
   )
 }
 
@@ -71,14 +73,14 @@ resource "azurerm_storage_account" "function" {
 # Blob container for incoming .txt uploads (Path C)
 resource "azurerm_storage_container" "uploads" {
   name                  = "uploads"
-  storage_account_name  = azurerm_storage_account.function.name
+  storage_account_id    = azurerm_storage_account.function.id
   container_access_type = "private"
 }
 
 # Blob container for processed results (Path C)
 resource "azurerm_storage_container" "results" {
   name                  = "results"
-  storage_account_name  = azurerm_storage_account.function.name
+  storage_account_id    = azurerm_storage_account.function.id
   container_access_type = "private"
 }
 
@@ -138,6 +140,12 @@ resource "azurerm_linux_function_app" "function" {
     "OPENAI_MODEL"             = var.model_deployment_name
     "STORAGE_ACCOUNT_NAME"     = azurerm_storage_account.function.name
     "STORAGE_ACCOUNT_KEY"      = azurerm_storage_account.function.primary_access_key
+  }
+
+  timeouts {
+    create = "30m"
+    update = "30m"
+    delete = "30m"
   }
 
   tags = {

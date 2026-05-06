@@ -189,7 +189,7 @@ def _detect_data_types(df: pd.DataFrame) -> Dict[str, str]:
     return data_types
 
 def _is_date(value: str) -> bool:
-    """Check if value looks like a date"""
+    """Check if the value looks like a date"""
     date_patterns = [
         r'\d{4}-\d{2}-\d{2}',  # YYYY-MM-DD
         r'\d{2}/\d{2}/\d{4}',  # MM/DD/YYYY
