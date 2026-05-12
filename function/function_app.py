@@ -17,10 +17,10 @@ from azure.storage.blob import (
     ContentSettings,
 )
 
-# Import LangGraph pipeline instead of individual agents
-from agents.langgraph_pipeline import run_langgraph_document_pipeline
-from agents.parse_text_agent import AgentState
-from agents.excel_langgraph_pipeline import run_excel_langgraph_pipeline
+# Import LangGraph pipelines from reorganized agent directories
+from agents.text.langgraph_pipeline import run_langgraph_document_pipeline
+from agents.text.parse_text_agent import AgentState
+from agents.excel.excel_langgraph_pipeline import run_excel_langgraph_pipeline
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -290,7 +290,7 @@ def langgraph_pipeline_activity(input: dict) -> dict:
 def parse_text_activity(input: dict) -> dict:
     logging.info("Executing legacy parse_text_activity - consider using langgraph_pipeline_activity")
     try:
-        from agents.parse_text_agent import parse_text_agent
+        from agents.text.parse_text_agent import parse_text_agent
         result = parse_text_agent(input)
         logging.info("parse_text_activity completed successfully")
         return result
@@ -303,7 +303,7 @@ def parse_text_activity(input: dict) -> dict:
 def find_equivalents_activity(input: dict) -> dict:
     logging.info("Executing legacy find_equivalents_activity - consider using langgraph_pipeline_activity")
     try:
-        from agents.find_equivalents_agent import find_equivalents_agent
+        from agents.text.find_equivalents_agent import find_equivalents_agent
         result = find_equivalents_agent(input)
         logging.info("find_equivalents_activity completed successfully")
         return result
@@ -316,7 +316,7 @@ def find_equivalents_activity(input: dict) -> dict:
 def consolidate_text_activity(input: dict) -> dict:
     logging.info("Executing legacy consolidate_text_activity - consider using langgraph_pipeline_activity")
     try:
-        from agents.consolidate_text_agent import consolidate_text_agent
+        from agents.text.consolidate_text_agent import consolidate_text_agent
         result = consolidate_text_agent(input)
         logging.info("consolidate_text_activity completed successfully")
         return result
@@ -448,7 +448,8 @@ def process_blob(blob: func.InputStream):
                 "token_usage": result.get("token_usage", {}),
                 "ragas_scores": result.get("ragas_scores", {}),
                 "workflow_info": result.get("workflow_info", {}),
-                "processing_timestamp": datetime.now(timezone.utc).isoformat()
+                "processing_timestamp": datetime.now(timezone.utc).isoformat(),
+                "function_version": "1.0"
             }
             
         else:
