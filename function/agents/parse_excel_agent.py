@@ -5,10 +5,9 @@ Parses Excel files and extracts structured data and text content for analysis.
 
 import logging
 import re
-import pandas as pd
 import openpyxl
 from io import BytesIO
-from typing import TypedDict, Dict, Any, List
+from typing import TypedDict, Dict, Any, List, Optional
 
 
 # ============================================================================
@@ -178,7 +177,7 @@ def _get_sheet_names(excel_file: BytesIO) -> List[str]:
 
 def _parse_sheet(excel_file: BytesIO, sheet_name: str) -> Dict[str, Any]:
     """
-    Parse a single Excel sheet.
+    Parse a single Excel sheet using openpyxl only.
     
     Args:
         excel_file: BytesIO object containing Excel data
@@ -189,11 +188,60 @@ def _parse_sheet(excel_file: BytesIO, sheet_name: str) -> Dict[str, Any]:
     """
     try:
         excel_file.seek(0)  # Reset to beginning
-        df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
         
-        # Get sheet statistics
-        sheet_rows, sheet_columns = df.shape
-        non_empty_cells = int(df.notna().sum().sum())
+        # Load workbook with openpyxl (data_only=True to get computed values)
+        wb = openpyxl.load_workbook(excel_file, data_only=True)
+        ws = wb[sheet_name]
+        
+        # Extract all data from the sheet
+        data = []
+        for row in ws.iter_rows(values_only=True):
+            data.append(list(row))
+        
+        wb.close()
+        
+        # Check if sheet is empty
+        if not data or all(all(cell is None for cell in row) for row in data):
+            logging.warning(f"Sheet '{sheet_name}' has no data")
+            return {
+                "data": {
+                    "sheet_name": sheet_name,
+                    "rows": 0,
+                    "columns": 0,
+                    "non_empty_cells": 0,
+                    "data": [],
+                    "has_headers": False,
+                    "data_types": {},
+                },
+                "text": f"--- Sheet: {sheet_name} (Empty) ---"
+            }
+        
+        # Calculate statistics
+        sheet_rows = len(data)
+        sheet_columns = max(len(row) for row in data) if data else 0
+        
+        # Normalize row lengths (ensure all rows have same number of columns)
+        normalized_data = []
+        for row in data:
+            normalized_row = list(row) + [None] * (sheet_columns - len(row))
+            normalized_data.append(normalized_row)
+        
+        # Count non-empty cells
+        non_empty_cells = sum(
+            1 for row in normalized_data 
+            for cell in row 
+            if cell is not None and str(cell).strip()
+        )
+        
+        # Convert data to strings for storage
+        string_data = [
+            [str(cell) if cell is not None else "" for cell in row]
+            for row in normalized_data
+        ]
+        
+        # Detect headers and column types
+        has_headers = _detect_headers_openpyxl(normalized_data)
+        data_types = _detect_column_types_openpyxl(normalized_data)
         
         # Create structured sheet data
         sheet_data = {
@@ -201,13 +249,13 @@ def _parse_sheet(excel_file: BytesIO, sheet_name: str) -> Dict[str, Any]:
             "rows": sheet_rows,
             "columns": sheet_columns,
             "non_empty_cells": non_empty_cells,
-            "data": df.fillna("").astype(str).values.tolist(),
-            "has_headers": _detect_headers(df),
-            "data_types": _detect_column_types(df),
+            "data": string_data,
+            "has_headers": has_headers,
+            "data_types": data_types,
         }
         
         # Extract text content
-        text_content = _extract_sheet_text(df, sheet_name)
+        text_content = _extract_sheet_text_openpyxl(normalized_data, sheet_name)
         
         logging.info(
             f"Parsed sheet '{sheet_name}': "
@@ -232,60 +280,83 @@ def _parse_sheet(excel_file: BytesIO, sheet_name: str) -> Dict[str, Any]:
 
 
 # ============================================================================
-# Data Type Detection Functions
+# Data Type Detection Functions (openpyxl-based)
 # ============================================================================
 
-def _detect_headers(df: pd.DataFrame) -> bool:
+def _detect_headers_openpyxl(data: List[List[Any]]) -> bool:
     """
     Detect if the first row likely contains column headers.
     
     Args:
-        df: DataFrame to analyze
+        data: 2D list of cell values from openpyxl
         
     Returns:
         True if first row appears to be headers
     """
-    if df.shape[0] < 2:
+    if len(data) < 2:
         return False
     
-    first_row = df.iloc[0].astype(str).str.lower()
+    first_row = data[0]
     
     # Check for common header keywords
     for cell_value in first_row:
-        if any(keyword in str(cell_value) for keyword in HEADER_KEYWORDS):
-            return True
+        if cell_value is not None:
+            cell_str = str(cell_value).lower()
+            if any(keyword in cell_str for keyword in HEADER_KEYWORDS):
+                return True
     
     # Check if first row has different pattern than subsequent rows
-    first_row_types = set(df.iloc[0].apply(type))
-    if len(df) > 1:
-        other_rows_types = set(df.iloc[1:].values.flatten().dtype.type)
-        if len(first_row_types) == 1 and len(other_rows_types) > 1:
-            return True
+    # Compare if first row is all strings while other rows have mixed types
+    try:
+        first_row_types = set(type(cell) for cell in first_row if cell is not None)
+        
+        if len(data) > 1:
+            # Get types from a sample of other rows
+            other_rows_types = set()
+            for row in data[1:min(6, len(data))]:
+                other_rows_types.update(type(cell) for cell in row if cell is not None)
+            
+            # If first row is all strings but other rows have numbers, likely headers
+            if len(first_row_types) == 1 and str in first_row_types and len(other_rows_types) > 1:
+                return True
+    except Exception as e:
+        logging.debug(f"Error detecting headers: {e}")
     
     return False
 
 
-def _detect_column_types(df: pd.DataFrame) -> Dict[str, str]:
+def _detect_column_types_openpyxl(data: List[List[Any]]) -> Dict[str, str]:
     """
     Detect data types for each column.
     
     Args:
-        df: DataFrame to analyze
+        data: 2D list of cell values from openpyxl
         
     Returns:
         Dictionary mapping column indices to detected types
     """
     column_types = {}
     
-    for col_idx in range(df.shape[1]):
-        column = df.iloc[:, col_idx].dropna()
+    if not data:
+        return column_types
+    
+    num_columns = len(data[0]) if data else 0
+    
+    for col_idx in range(num_columns):
+        # Extract column values (skip None/empty)
+        column_values = []
+        for row in data:
+            if col_idx < len(row) and row[col_idx] is not None:
+                value_str = str(row[col_idx]).strip()
+                if value_str:
+                    column_values.append(value_str)
         
-        if len(column) == 0:
+        if not column_values:
             column_types[f"column_{col_idx}"] = "empty"
             continue
         
-        # Sample first few non-empty values
-        sample_values = column.head(5).astype(str).tolist()
+        # Sample first few non-empty values (up to 5)
+        sample_values = column_values[:5]
         
         # Detect type based on patterns
         detected_type = _classify_data_type(sample_values)
@@ -349,15 +420,15 @@ def _is_percentage(value: str) -> bool:
 
 
 # ============================================================================
-# Text Extraction Functions
+# Text Extraction Functions (openpyxl-based)
 # ============================================================================
 
-def _extract_sheet_text(df: pd.DataFrame, sheet_name: str) -> str:
+def _extract_sheet_text_openpyxl(data: List[List[Any]], sheet_name: str) -> str:
     """
     Extract readable text content from a sheet.
     
     Args:
-        df: DataFrame to extract text from
+        data: 2D list of cell values from openpyxl
         sheet_name: Name of the sheet
         
     Returns:
@@ -365,10 +436,11 @@ def _extract_sheet_text(df: pd.DataFrame, sheet_name: str) -> str:
     """
     text_lines = [f"--- Sheet: {sheet_name} ---"]
     
-    for _, row in df.iterrows():
+    for row in data:
         # Join non-empty cells with pipe separator
         row_text = " | ".join([
-            str(cell) for cell in row if pd.notna(cell) and str(cell).strip()
+            str(cell) for cell in row 
+            if cell is not None and str(cell).strip()
         ])
         
         if row_text:
