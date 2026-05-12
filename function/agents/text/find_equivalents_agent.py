@@ -1,41 +1,68 @@
+"""
+Synonym Finding Agent
+
+Identifies professional synonyms for key terms in documents using Azure OpenAI
+Chat Completions API with intelligent fallback mechanisms.
+"""
+
 import logging
 import requests
 import os
 import json
 from .parse_text_agent import AgentState
 
-def _call_azure_openai_chat_completions_for_synonyms(text: str) -> tuple[dict, dict]:
-    """Call Azure OpenAI Chat Completions API for synonym finding
-    
-    Returns:
-        tuple: (synonyms_dict, token_usage_dict)
+
+# ==============================================================================
+# AZURE OPENAI INTEGRATION
+# ==============================================================================
+
+def _call_azure_openai_for_synonyms(text: str) -> tuple[dict, dict]:
     """
+    Request synonym suggestions from Azure OpenAI Chat Completions API.
     
+    Uses a structured prompt to identify important words and generate
+    professional synonyms suitable for business documents.
+    
+    Args:
+        text: Document text to analyze
+        
+    Returns:
+        Tuple of (synonyms_dict, token_usage_dict)
+        - synonyms_dict: Maps words to lists of synonym alternatives
+        - token_usage_dict: API token consumption metrics
+    """
     openai_endpoint = os.environ.get("OPENAI_ENDPOINT")
     openai_api_key = os.environ.get("OPENAI_API_KEY")
     openai_model = os.environ.get("OPENAI_MODEL", "gpt-5.4-nano")
     
     if not openai_endpoint or not openai_api_key:
-        logging.warning("Azure OpenAI credentials not found, using fallback synonyms")
+        logging.warning("Azure OpenAI credentials not configured")
         return {}, {}
     
-    # Azure OpenAI Chat Completions endpoint
-    chat_completions_url = f"{openai_endpoint}openai/deployments/{openai_model}/chat/completions?api-version=2025-04-01-preview"
+    # Construct Chat Completions API endpoint
+    api_url = (
+        f"{openai_endpoint}openai/deployments/{openai_model}/"
+        f"chat/completions?api-version=2025-04-01-preview"
+    )
     
     headers = {
         "Content-Type": "application/json",
         "api-key": openai_api_key
     }
     
-    # Create chat completion messages
+    # Define conversation for synonym extraction
     messages = [
         {
             "role": "system",
-            "content": "You are a professional writing assistant that finds synonyms and creates titles and summaries for business documents. Return only valid JSON format."
+            "content": (
+                "You are a professional writing assistant that finds synonyms "
+                "and creates titles and summaries for business documents. "
+                "Return only valid JSON format."
+            )
         },
         {
             "role": "user", 
-            "content": f"""Analyze this document text and find professional synonyms for important words, then create a title and summary for the document.
+            "content": f"""Analyze this document text and find professional synonyms for important words.
 
 Document Text: "{text}"
 
@@ -63,16 +90,15 @@ JSON Response:"""
     }
     
     try:
-        logging.info("Calling Azure OpenAI Chat Completions API for synonym analysis...")
-        response = requests.post(chat_completions_url, headers=headers, json=payload, timeout=60)
+        logging.info("Requesting synonyms from Azure OpenAI...")
+        response = requests.post(api_url, headers=headers, json=payload, timeout=60)
         
-        logging.info(f"Azure OpenAI Chat Completions response status: {response.status_code}")
+        logging.info(f"Azure OpenAI response status: {response.status_code}")
         response.raise_for_status()
         
         result = response.json()
         
-        # Extract token usage information
-        print("----------TESTTT----------")
+        # Extract token usage metrics
         token_usage = {}
         if "usage" in result:
             token_usage = {
@@ -80,158 +106,190 @@ JSON Response:"""
                 "completion_tokens": result["usage"].get("completion_tokens", 0),
                 "total_tokens": result["usage"].get("total_tokens", 0)
             }
-            logging.info(f"Token usage - Prompt: {token_usage['prompt_tokens']}, Completion: {token_usage['completion_tokens']}, Total: {token_usage['total_tokens']}")
-        else:
-            logging.warning("No usage field found in Azure OpenAI response")
-            logging.info(f"Response keys: {list(result.keys())}")
+            logging.info(
+                f"Token usage - Prompt: {token_usage['prompt_tokens']}, "
+                f"Completion: {token_usage['completion_tokens']}, "
+                f"Total: {token_usage['total_tokens']}"
+            )
         
-        # Extract completion text from chat response
+        # Parse completion text
         if "choices" in result and len(result["choices"]) > 0:
             completion_text = result["choices"][0]["message"]["content"].strip()
-            logging.info(f"Azure OpenAI chat completion: {completion_text[:200]}...")
-            logging.info(f"Raw AI response: {repr(completion_text[:500])}")
+            logging.info(f"Received completion: {completion_text[:200]}...")
             
-            # Try to parse as JSON
+            # Parse JSON response
             try:
                 synonyms = json.loads(completion_text)
                 
-                # Validate it's a dictionary
                 if isinstance(synonyms, dict) and synonyms:
-                    logging.info(f"Azure OpenAI Chat Completions found synonyms for {len(synonyms)} words")
-                    logging.info(f"CRITICAL: Returning AI synonyms with token usage: {token_usage}")
-                    logging.info(f"CRITICAL: Token usage type: {type(token_usage)}, empty: {not token_usage}")
-                    # Ensure token usage is always populated when AI succeeds
-                    if not token_usage or token_usage == {}:
-                        # Calculate estimated tokens based on text length
-                        estimated_prompt = len(text.split()) * 1.3  # Rough estimate
-                        estimated_completion = len(str(synonyms)) / 4  # Rough estimate
-                        token_usage = {
-                            "prompt_tokens": int(estimated_prompt),
-                            "completion_tokens": int(estimated_completion),
-                            "total_tokens": int(estimated_prompt + estimated_completion),
-                            "estimated": True
-                        }
-                        logging.warning(f"Token usage was empty, using estimated values: {token_usage}")
+                    logging.info(f"Found synonyms for {len(synonyms)} words")
+                    
+                    # Ensure token usage is populated
+                    if not token_usage:
+                        token_usage = _estimate_token_usage(text, str(synonyms))
+                        logging.warning("Token usage estimated from text length")
+                    
                     return synonyms, token_usage
                 else:
-                    logging.warning("Azure OpenAI returned empty or invalid dictionary")
-                    logging.info(f"Returning empty synonyms with token usage: {token_usage}")
+                    logging.warning("Azure OpenAI returned empty dictionary")
                     return {}, token_usage
                     
             except json.JSONDecodeError as json_err:
-                logging.error(f"Failed to parse Azure OpenAI completion as JSON: {json_err}")
-                logging.error(f"Raw completion text that failed: {repr(completion_text)}")
-                logging.info(f"Returning empty synonyms but preserving token usage: {token_usage}")
+                logging.error(f"Failed to parse JSON response: {json_err}")
+                logging.error(f"Raw completion: {repr(completion_text)}")
                 return {}, token_usage
         else:
             logging.error("Azure OpenAI response missing choices")
             return {}, token_usage
         
     except requests.exceptions.RequestException as e:
-        logging.error(f"Azure OpenAI Chat Completions API request failed: {str(e)}")
+        logging.error(f"Azure OpenAI API request failed: {str(e)}")
         if hasattr(e, 'response') and e.response is not None:
             logging.error(f"Response content: {e.response.text}")
         return {}, {}
-    except KeyError as e:
-        logging.error(f"Unexpected Azure OpenAI response structure: {str(e)}")
-        logging.error(f"Full response: {result}")
-        return {}, {}
     except Exception as e:
-        logging.error(f"Unexpected error calling Azure OpenAI Chat Completions: {str(e)}")
+        logging.error(f"Unexpected error calling Azure OpenAI: {str(e)}")
         return {}, {}
+
+
+def _estimate_token_usage(input_text: str, output_text: str) -> dict:
+    """
+    Estimate token usage when actual metrics are unavailable.
+    
+    Uses rough approximation: 1 token ≈ 0.75 words
+    
+    Args:
+        input_text: Input prompt text
+        output_text: Generated completion text
+        
+    Returns:
+        Dictionary with estimated token counts
+    """
+    estimated_prompt = max(int(len(input_text.split()) * 1.3), 50)
+    estimated_completion = max(int(len(output_text) / 4), 10)
+    
+    return {
+        "prompt_tokens": estimated_prompt,
+        "completion_tokens": estimated_completion,
+        "total_tokens": estimated_prompt + estimated_completion,
+        "estimated": True
+    }
+
+
+# ==============================================================================
+# FALLBACK SYNONYM MAPPING
+# ==============================================================================
+
+def _get_fallback_synonyms() -> dict:
+    """
+    Provide hardcoded professional synonym mappings as fallback.
+    
+    Returns:
+        Dictionary mapping common words to professional alternatives
+    """
+    return {
+        # Business terms
+        "analyze": ["examine", "evaluate", "assess"],
+        "important": ["crucial", "vital", "significant"],
+        "document": ["report", "manuscript", "file"],
+        "process": ["procedure", "method", "workflow"],
+        "review": ["examine", "evaluate", "inspect"],
+        "implement": ["execute", "deploy", "establish"],
+        "manage": ["oversee", "coordinate", "supervise"],
+        "develop": ["create", "establish", "formulate"],
+        "improve": ["enhance", "optimize", "refine"],
+        "effective": ["efficient", "successful", "productive"],
+        
+        # Quality descriptors
+        "good": ["excellent", "superior", "outstanding"],
+        "bad": ["poor", "inadequate", "substandard"],
+        "big": ["substantial", "significant", "considerable"],
+        "small": ["minimal", "limited", "modest"],
+        "fast": ["rapid", "swift", "expeditious"],
+        "slow": ["gradual", "deliberate", "measured"],
+        
+        # Action verbs
+        "show": ["demonstrate", "illustrate", "exhibit"],
+        "use": ["utilize", "employ", "apply"],
+        "make": ["create", "produce", "generate"],
+        "get": ["obtain", "acquire", "secure"],
+        "help": ["assist", "support", "facilitate"],
+        "work": ["function", "operate", "perform"],
+        "find": ["locate", "identify", "discover"],
+        "think": ["consider", "contemplate", "analyze"]
+    }
+
+
+def _find_synonyms_in_text(text: str, synonym_map: dict) -> dict:
+    """
+    Search text for words that have synonym mappings.
+    
+    Args:
+        text: Document text to search
+        synonym_map: Dictionary of word-to-synonyms mappings
+        
+    Returns:
+        Dictionary of synonyms found in the text
+    """
+    words = text.lower().split()
+    found_synonyms = {}
+    
+    for word in words:
+        # Remove punctuation
+        clean_word = word.strip('.,!?;:"\'-()[]{}')
+        
+        if clean_word in synonym_map:
+            found_synonyms[clean_word] = synonym_map[clean_word]
+    
+    return found_synonyms
+
+
+# ==============================================================================
+# AGENT FUNCTION
+# ==============================================================================
 
 def find_equivalents_agent(state: AgentState) -> AgentState:
-    """LangGraph node: Find synonyms using Azure OpenAI Completions with fallback"""
+    """
+    Find professional synonyms for key terms using AI or fallback mapping.
+    
+    Attempts to use Azure OpenAI for intelligent synonym detection, falling
+    back to a curated professional synonym list if AI is unavailable or fails.
+    
+    Args:
+        state: Current pipeline state with text to analyze
+        
+    Returns:
+        Updated state with synonyms and token_usage populated
+    """
     text = state.get("text", "")
     
-    logging.info("Starting synonym analysis with Azure OpenAI Chat Completions...")
-    logging.info("LOGING info test line 148")
+    logging.info("Starting synonym analysis...")
 
-    # Try Azure OpenAI Chat Completions first
-    ai_synonyms, token_usage = _call_azure_openai_chat_completions_for_synonyms(text)
+    # Attempt AI-powered synonym detection
+    ai_synonyms, token_usage = _call_azure_openai_for_synonyms(text)
     
-    print("- print function return _call_azure_openai_chat_completions_for_synonyms(text) ----------:",_call_azure_openai_chat_completions_for_synonyms(text))
-    print("- line 149 ai_synonyms and token_usage ----------:",ai_synonyms, token_usage)
-    logging.info("- info logging in line 154 -")
-
-    logging.info(f"AI call result - Synonyms: {len(ai_synonyms) if ai_synonyms else 0} groups, Token usage: {token_usage}")
-    
-    # ALWAYS estimate token usage if we attempted an AI call (even if it returned no synonyms)
-    if not token_usage or len(token_usage) == 0:
-        # Estimate based on text length
-        estimated_prompt = max(len(text.split()) * 1.3, 50)  # Minimum 50 tokens
-        estimated_completion = 30  # Reasonable default
-        token_usage = {
-            "prompt_tokens": int(estimated_prompt),
-            "completion_tokens": estimated_completion,
-            "total_tokens": int(estimated_prompt + estimated_completion),
-            "estimated": True,
-            "reason": "AI_call_attempted_but_no_usage_returned"
-        }
-        logging.warning(f"Estimated token usage after AI call: {token_usage}")
+    # Ensure token usage is estimated if AI was attempted but returned nothing
+    if not token_usage:
+        token_usage = _estimate_token_usage(text, "")
+        token_usage["reason"] = "AI_call_attempted_but_no_usage_returned"
+        logging.warning(f"Estimated token usage: {token_usage}")
     
     if ai_synonyms:
-        # Use AI-generated synonyms
+        # Success: Use AI-generated synonyms
         state["synonyms"] = ai_synonyms
         state["token_usage"] = token_usage
-        logging.info(f"Using Azure OpenAI Chat Completions synonyms for {len(ai_synonyms)} words")
-        logging.info(f"Stored token usage in state: {token_usage}")
-        logging.info(f"DEBUG: AI synonyms used, token_usage={token_usage}")
-        logging.info(f"DEBUG: State keys after AI: {list(state.keys())}")
+        logging.info(f"Using AI synonyms for {len(ai_synonyms)} words")
     else:
-        # Fallback to enhanced hardcoded synonyms
-        logging.info("Using enhanced fallback synonym mapping")
+        # Fallback: Use curated professional synonym list
+        logging.info("Using fallback professional synonym mapping")
         
-        professional_synonym_map = {
-            # Business terms
-            "analyze": ["examine", "evaluate", "assess"],
-            "important": ["crucial", "vital", "significant"],
-            "document": ["report", "manuscript", "file"],
-            "process": ["procedure", "method", "workflow"],
-            "review": ["examine", "evaluate", "inspect"],
-            "implement": ["execute", "deploy", "establish"],
-            "manage": ["oversee", "coordinate", "supervise"],
-            "develop": ["create", "establish", "formulate"],
-            "improve": ["enhance", "optimize", "refine"],
-            "effective": ["efficient", "successful", "productive"],
-            
-            # Quality terms
-            "good": ["excellent", "superior", "outstanding"],
-            "bad": ["poor", "inadequate", "substandard"],
-            "big": ["substantial", "significant", "considerable"],
-            "small": ["minimal", "limited", "modest"],
-            "fast": ["rapid", "swift", "expeditious"],
-            "slow": ["gradual", "deliberate", "measured"],
-            
-            # Action terms
-            "show": ["demonstrate", "illustrate", "exhibit"],
-            "use": ["utilize", "employ", "apply"],
-            "make": ["create", "produce", "generate"],
-            "get": ["obtain", "acquire", "secure"],
-            "help": ["assist", "support", "facilitate"],
-            "work": ["function", "operate", "perform"],
-            "find": ["locate", "identify", "discover"],
-            "think": ["consider", "contemplate", "analyze"]
-        }
-        
-        # Find synonyms in text
-        words = text.lower().split()
-        found_synonyms = {}
-        
-        for word in words:
-            # Clean word of punctuation
-            clean_word = word.strip('.,!?;:"\'-()[]{}')
-            if clean_word in professional_synonym_map:
-                found_synonyms[clean_word] = professional_synonym_map[clean_word]
+        synonym_map = _get_fallback_synonyms()
+        found_synonyms = _find_synonyms_in_text(text, synonym_map)
         
         state["synonyms"] = found_synonyms
-        # Preserve token usage from AI call (already estimated above)
         state["token_usage"] = token_usage
+        
         logging.info(f"Fallback found synonyms for {len(found_synonyms)} words")
-        logging.info(f"Preserved token usage from AI call: {state['token_usage']}")
-        logging.info(f"DEBUG: Fallback used, token_usage={state['token_usage']}")
     
     logging.info("Synonym analysis completed")
-    logging.info(f"DEBUG: Final state token_usage={state.get('token_usage', 'MISSING')}")
-    logging.info(f"DEBUG: Final token_usage type={type(state.get('token_usage'))}, value={state.get('token_usage')}")
     return state

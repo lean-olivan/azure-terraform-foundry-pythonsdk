@@ -1,37 +1,65 @@
+"""
+Summary Generation Agent
+
+Creates professional titles and summaries for documents using Azure OpenAI
+Chat Completions API with fallback generation logic.
+"""
+
 import logging
 import requests
 import os
 import json
 from .parse_text_agent import AgentState
 
+
+# ==============================================================================
+# AZURE OPENAI INTEGRATION
+# ==============================================================================
+
 def _call_azure_openai_for_title_and_summary(text: str) -> tuple[str, str, dict]:
-    """Call Azure OpenAI Chat Completions API for title and summary generation
-    
-    Returns:
-        tuple: (title, summary, token_usage_dict)
     """
+    Generate document title and summary using Azure OpenAI Chat Completions API.
     
+    Creates concise, professional titles and summaries suitable for
+    business documentation and reporting.
+    
+    Args:
+        text: Document text to summarize
+        
+    Returns:
+        Tuple of (title, summary, token_usage_dict)
+        - title: Generated document title
+        - summary: Generated document summary
+        - token_usage_dict: API token consumption metrics
+    """
     openai_endpoint = os.environ.get("OPENAI_ENDPOINT")
     openai_api_key = os.environ.get("OPENAI_API_KEY")
     openai_model = os.environ.get("OPENAI_MODEL", "gpt-5.4-nano")
     
     if not openai_endpoint or not openai_api_key:
-        logging.warning("Azure OpenAI credentials not found, using fallback title/summary")
+        logging.warning("Azure OpenAI credentials not configured")
         return "", "", {}
     
-    # Azure OpenAI Chat Completions endpoint
-    chat_completions_url = f"{openai_endpoint}openai/deployments/{openai_model}/chat/completions?api-version=2025-04-01-preview"
+    # Construct Chat Completions API endpoint
+    api_url = (
+        f"{openai_endpoint}openai/deployments/{openai_model}/"
+        f"chat/completions?api-version=2025-04-01-preview"
+    )
     
     headers = {
         "Content-Type": "application/json",
         "api-key": openai_api_key
     }
     
-    # Create chat completion messages
+    # Define conversation for title and summary generation
     messages = [
         {
             "role": "system",
-            "content": "You are a professional document analyst that creates concise titles and summaries for business documents. Return only valid JSON format."
+            "content": (
+                "You are a professional document analyst that creates concise "
+                "titles and summaries for business documents. "
+                "Return only valid JSON format."
+            )
         },
         {
             "role": "user", 
@@ -62,15 +90,15 @@ JSON Response:"""
     }
     
     try:
-        logging.info("Calling Azure OpenAI Chat Completions API for title and summary generation...")
-        response = requests.post(chat_completions_url, headers=headers, json=payload, timeout=60)
+        logging.info("Requesting title and summary from Azure OpenAI...")
+        response = requests.post(api_url, headers=headers, json=payload, timeout=60)
         
-        logging.info(f"Azure OpenAI response status for title/summary: {response.status_code}")
+        logging.info(f"Azure OpenAI response status: {response.status_code}")
         response.raise_for_status()
         
         result = response.json()
         
-        # Extract token usage information
+        # Extract token usage metrics
         token_usage = {}
         if "usage" in result:
             token_usage = {
@@ -78,20 +106,21 @@ JSON Response:"""
                 "completion_tokens": result["usage"].get("completion_tokens", 0),
                 "total_tokens": result["usage"].get("total_tokens", 0)
             }
-            logging.info(f"Title/Summary Token usage - Prompt: {token_usage['prompt_tokens']}, Completion: {token_usage['completion_tokens']}, Total: {token_usage['total_tokens']}")
-        else:
-            logging.warning("No usage field found in Azure OpenAI response for title/summary")
+            logging.info(
+                f"Token usage - Prompt: {token_usage['prompt_tokens']}, "
+                f"Completion: {token_usage['completion_tokens']}, "
+                f"Total: {token_usage['total_tokens']}"
+            )
         
-        # Extract completion text from chat response
+        # Parse completion text
         if "choices" in result and len(result["choices"]) > 0:
             completion_text = result["choices"][0]["message"]["content"].strip()
-            logging.info(f"Azure OpenAI title/summary response: {completion_text[:200]}...")
+            logging.info(f"Received completion: {completion_text[:200]}...")
             
-            # Try to parse as JSON
+            # Parse JSON response
             try:
                 response_data = json.loads(completion_text)
                 
-                # Extract title and summary
                 if isinstance(response_data, dict):
                     title = response_data.get("title", "")
                     summary = response_data.get("summary", "")
@@ -100,16 +129,9 @@ JSON Response:"""
                     logging.info(f"Generated summary: {summary[:100]}...")
                     
                     # Ensure token usage is populated
-                    if not token_usage or token_usage == {}:
-                        estimated_prompt = len(text.split()) * 1.3
-                        estimated_completion = len(completion_text) / 4
-                        token_usage = {
-                            "prompt_tokens": int(estimated_prompt),
-                            "completion_tokens": int(estimated_completion),
-                            "total_tokens": int(estimated_prompt + estimated_completion),
-                            "estimated": True
-                        }
-                        logging.warning(f"Token usage was empty, using estimated values: {token_usage}")
+                    if not token_usage:
+                        token_usage = _estimate_token_usage(text, completion_text)
+                        logging.warning("Token usage estimated from text length")
                     
                     return title, summary, token_usage
                 else:
@@ -117,89 +139,159 @@ JSON Response:"""
                     return "", "", token_usage
                     
             except json.JSONDecodeError as json_err:
-                logging.error(f"Failed to parse Azure OpenAI response as JSON: {json_err}")
-                logging.error(f"Raw response text: {repr(completion_text)}")
+                logging.error(f"Failed to parse JSON response: {json_err}")
+                logging.error(f"Raw completion: {repr(completion_text)}")
                 return "", "", token_usage
         else:
             logging.error("Azure OpenAI response missing choices")
             return "", "", token_usage
         
     except requests.exceptions.RequestException as e:
-        logging.error(f"Azure OpenAI API request failed for title/summary: {str(e)}")
+        logging.error(f"Azure OpenAI API request failed: {str(e)}")
         if hasattr(e, 'response') and e.response is not None:
             logging.error(f"Response content: {e.response.text}")
         return "", "", {}
     except Exception as e:
-        logging.error(f"Unexpected error calling Azure OpenAI for title/summary: {str(e)}")
+        logging.error(f"Unexpected error calling Azure OpenAI: {str(e)}")
         return "", "", {}
 
+
+def _estimate_token_usage(input_text: str, output_text: str) -> dict:
+    """
+    Estimate token usage when actual metrics are unavailable.
+    
+    Uses rough approximation: 1 token ≈ 0.75 words
+    
+    Args:
+        input_text: Input prompt text
+        output_text: Generated completion text
+        
+    Returns:
+        Dictionary with estimated token counts
+    """
+    estimated_prompt = max(int(len(input_text.split()) * 1.3), 50)
+    estimated_completion = max(int(len(output_text) / 4), 10)
+    
+    return {
+        "prompt_tokens": estimated_prompt,
+        "completion_tokens": estimated_completion,
+        "total_tokens": estimated_prompt + estimated_completion,
+        "estimated": True
+    }
+
+
+# ==============================================================================
+# FALLBACK GENERATION
+# ==============================================================================
+
+def _generate_fallback_title_and_summary(text: str) -> tuple[str, str]:
+    """
+    Generate basic title and summary when AI is unavailable.
+    
+    Args:
+        text: Document text to process
+        
+    Returns:
+        Tuple of (title, summary)
+    """
+    title = "Document Analysis"
+    
+    # Use first sentence as summary
+    sentences = text.split('.')
+    if sentences:
+        summary = sentences[0][:200].strip()
+        if len(sentences[0]) > 200:
+            summary += "..."
+    else:
+        summary = "No summary available"
+    
+    return title, summary
+
+
+# ==============================================================================
+# TOKEN USAGE ACCUMULATION
+# ==============================================================================
+
+def _accumulate_token_usage(existing: dict, new: dict) -> dict:
+    """
+    Combine token usage from multiple API calls.
+    
+    Args:
+        existing: Previously accumulated token usage
+        new: New token usage to add
+        
+    Returns:
+        Combined token usage dictionary
+    """
+    if not existing:
+        return new
+    
+    if not new:
+        return existing
+    
+    return {
+        "prompt_tokens": (
+            existing.get("prompt_tokens", 0) + 
+            new.get("prompt_tokens", 0)
+        ),
+        "completion_tokens": (
+            existing.get("completion_tokens", 0) + 
+            new.get("completion_tokens", 0)
+        ),
+        "total_tokens": (
+            existing.get("total_tokens", 0) + 
+            new.get("total_tokens", 0)
+        ),
+    }
+
+
+# ==============================================================================
+# AGENT FUNCTION
+# ==============================================================================
+
 def generate_summary_agent(state: AgentState) -> AgentState:
-    """LangGraph node: Generate title and summary using Azure OpenAI"""
-    logging.info("="*80)
-    logging.info("GENERATE_SUMMARY_AGENT: STARTING")
-    logging.info("="*80)
+    """
+    Generate professional title and summary for the document.
     
+    Uses Azure OpenAI to create concise, professional titles and summaries,
+    falling back to basic extraction if AI is unavailable. Accumulates token
+    usage across multiple API calls in the pipeline.
+    
+    Args:
+        state: Current pipeline state with text to summarize
+        
+    Returns:
+        Updated state with title, summary, and accumulated token_usage
+    """
     text = state.get("text", "")
-    logging.info(f"GENERATE_SUMMARY_AGENT: Input text length: {len(text)} characters")
-    logging.info(f"GENERATE_SUMMARY_AGENT: Input state keys: {list(state.keys())}")
     
-    logging.info("Starting title and summary generation with Azure OpenAI...")
+    logging.info("Starting title and summary generation...")
     
-    # Call Azure OpenAI for title and summary
+    # Attempt AI-powered generation
     title, summary, token_usage = _call_azure_openai_for_title_and_summary(text)
     
-    logging.info(f"Title/Summary generation result - Title: '{title}', Summary length: {len(summary)} chars")
-    logging.info(f"Token usage from API call: {token_usage}")
-    
-    # Handle fallback if AI didn't return results
+    # Use fallback if AI didn't return results
     if not title and not summary:
         logging.info("Using fallback title and summary generation")
-        # Simple fallback: use first sentence as summary, generate basic title
-        sentences = text.split('.')
-        title = "Document Analysis"
-        summary = sentences[0][:200] + "..." if sentences else "No summary available"
+        title, summary = _generate_fallback_title_and_summary(text)
         
         # Estimate token usage for fallback
-        if not token_usage or len(token_usage) == 0:
-            estimated_prompt = max(len(text.split()) * 1.3, 50)
-            estimated_completion = 20
-            token_usage = {
-                "prompt_tokens": int(estimated_prompt),
-                "completion_tokens": estimated_completion,
-                "total_tokens": int(estimated_prompt + estimated_completion),
-                "estimated": True,
-                "reason": "fallback_used"
-            }
+        if not token_usage:
+            token_usage = _estimate_token_usage(text, title + summary)
+            token_usage["reason"] = "fallback_used"
     
-    # Store in state
+    # Store results in state
     state["title"] = title
     state["summary"] = summary
-    logging.info(f"GENERATE_SUMMARY_AGENT: Set title in state: '{title}'")
-    logging.info(f"GENERATE_SUMMARY_AGENT: Set summary in state: '{summary[:100]}...'")
     
-    # Accumulate token usage (add to existing token_usage from synonyms)
+    logging.info(f"Title: {title}")
+    logging.info(f"Summary: {summary[:100]}...")
+    
+    # Accumulate token usage from previous agents
     existing_token_usage = state.get("token_usage", {})
-    logging.info(f"GENERATE_SUMMARY_AGENT: Existing token_usage from state: {existing_token_usage}")
+    state["token_usage"] = _accumulate_token_usage(existing_token_usage, token_usage)
     
-    if existing_token_usage and token_usage:
-        # Combine token usage from both API calls
-        combined_token_usage = {
-            "prompt_tokens": existing_token_usage.get("prompt_tokens", 0) + token_usage.get("prompt_tokens", 0),
-            "completion_tokens": existing_token_usage.get("completion_tokens", 0) + token_usage.get("completion_tokens", 0),
-            "total_tokens": existing_token_usage.get("total_tokens", 0) + token_usage.get("total_tokens", 0),
-        }
-        state["token_usage"] = combined_token_usage
-        logging.info(f"Combined token usage: {combined_token_usage}")
-    elif token_usage:
-        state["token_usage"] = token_usage
-        logging.info(f"Set token_usage (no existing): {token_usage}")
-    
+    logging.info(f"Accumulated token usage: {state['token_usage']}")
     logging.info("Title and summary generation completed")
-    logging.info(f"Final title: {state.get('title', 'MISSING')}")
-    logging.info(f"Final summary: {state.get('summary', 'MISSING')[:100]}...")
-    logging.info(f"Final token_usage: {state.get('token_usage', 'MISSING')}")
-    logging.info("="*80)
-    logging.info("GENERATE_SUMMARY_AGENT: COMPLETED")
-    logging.info("="*80)
     
     return state
