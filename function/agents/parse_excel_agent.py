@@ -26,6 +26,7 @@ class ExcelAgentState(TypedDict):
     token_usage: dict
     excel_content: bytes
     filename: str
+    ragas_scores: dict
 
 
 # ============================================================================

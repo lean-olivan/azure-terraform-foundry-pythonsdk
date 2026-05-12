@@ -11,6 +11,7 @@ from langgraph.graph import StateGraph, END
 # Import Excel-specific agents
 from .parse_excel_agent import parse_excel_agent, ExcelAgentState
 from .analyze_excel_agent import analyze_excel_agent
+from .evaluate_ragas_agent import evaluate_ragas_agent
 
 
 # ============================================================================
@@ -76,6 +77,7 @@ def create_excel_workflow() -> StateGraph:
     Defines the workflow structure:
     - Entry Point: parse_excel (extract data from Excel)
     - Next Node: analyze_excel (generate AI analysis)
+    - Next Node: evaluate_ragas (evaluate quality with RAGAS metrics)
     - End: Return final results
     
     Returns:
@@ -87,11 +89,13 @@ def create_excel_workflow() -> StateGraph:
     # Add processing nodes (agents)
     workflow.add_node("parse_excel", parse_excel_agent)
     workflow.add_node("analyze_excel", analyze_excel_agent)
+    workflow.add_node("evaluate_ragas", evaluate_ragas_agent)
     
     # Define the execution flow
     workflow.set_entry_point("parse_excel")
     workflow.add_edge("parse_excel", "analyze_excel")
-    workflow.add_edge("analyze_excel", END)
+    workflow.add_edge("analyze_excel", "evaluate_ragas")
+    workflow.add_edge("evaluate_ragas", END)
     
     # Compile and return the workflow
     return workflow.compile()
@@ -122,7 +126,8 @@ def _create_initial_state(excel_content: bytes, filename: str) -> ExcelAgentStat
         pdf_content="",
         token_usage={},
         excel_content=excel_content,
-        filename=filename
+        filename=filename,
+        ragas_scores={}
     )
 
 
@@ -148,12 +153,14 @@ def _prepare_success_response(result: ExcelAgentState, filename: str) -> Dict[st
         "summary": result.get("summary", ""),
         "parsed_data": result.get("parsed_data", {}),
         "token_usage": result.get("token_usage", {}),
+        "ragas_scores": result.get("ragas_scores", {}),
         "workflow_info": {
-            "agents_used": ["parse_excel", "analyze_excel"],
+            "agents_used": ["parse_excel", "analyze_excel", "evaluate_ragas"],
             "workflow_type": WORKFLOW_TYPE,
             "version": PIPELINE_VERSION,
             "langgraph_enabled": True,
             "azure_openai_enabled": True,
+            "ragas_enabled": True,
             "processing_timestamp": _get_current_timestamp()
         }
     }

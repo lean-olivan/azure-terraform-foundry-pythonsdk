@@ -446,6 +446,7 @@ def process_blob(blob: func.InputStream):
                 "summary": result.get("summary", ""),
 #                "parsed_data": result.get("parsed_data", {})
                 "token_usage": result.get("token_usage", {}),
+                "ragas_scores": result.get("ragas_scores", {}),
                 "workflow_info": result.get("workflow_info", {}),
                 "processing_timestamp": datetime.now(timezone.utc).isoformat()
             }
