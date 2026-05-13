@@ -633,9 +633,8 @@ def process_blob(blob: func.InputStream):
                 "ragas_scores": result.get("ragas_scores", {}),
                 "workflow_info": result.get("workflow_info", {}),
                 "processing_timestamp": datetime.now(timezone.utc).isoformat(),
-                "function_version": "1.1"
             }
-            
+
         else:
             # Text/Word document processing
             text = _extract_text(raw_bytes, filename)

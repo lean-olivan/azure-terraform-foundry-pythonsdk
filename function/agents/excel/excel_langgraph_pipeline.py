@@ -87,15 +87,26 @@ def create_excel_workflow() -> StateGraph:
     workflow = StateGraph(ExcelAgentState)
     
     # Add processing nodes (agents)
+
+    # input -> uri del blob
+
     workflow.add_node("parse_excel", parse_excel_agent)
+
     workflow.add_node("analyze_excel", analyze_excel_agent)
+
     workflow.add_node("evaluate_ragas", evaluate_ragas_agent)
-    
+
+
+    # input -> uri del blob
+    # {id, timestap ...} -> bypass
+
     # Define the execution flow
     workflow.set_entry_point("parse_excel")
     workflow.add_edge("parse_excel", "analyze_excel")
     workflow.add_edge("analyze_excel", "evaluate_ragas")
     workflow.add_edge("evaluate_ragas", END)
+
+    # output -> json con title/summaru/ragas
     
     # Compile and return the workflow
     return workflow.compile()
