@@ -219,6 +219,7 @@ def http_start(req: func.HttpRequest) -> func.HttpResponse:
                 "version": WORKFLOW_VERSION,
                 "langgraph_enabled": True,
                 "azure_openai_chat_completions_enabled": True,
+                "processing_timestamp": datetime.now(timezone.utc).isoformat(),
             },
         }
 
@@ -243,7 +244,7 @@ def process_excel_http(req: func.HttpRequest) -> func.HttpResponse:
     Synchronous HTTP endpoint for Excel file processing.
     
     Accepts either multipart form data with file upload or JSON with base64-encoded content.
-    Processes Excel files through the LangGraph pipeline with analysis and RAGAS evaluation.
+    Processes Excel files through the LangGraph pipeline with analysis and Claim-Level Verification.
     
     Request Options:
         1. Multipart form data: file field with .xlsx or .xls file
@@ -374,6 +375,7 @@ def text_processing_orchestrator(context: df.DurableOrchestrationContext):
                 "instance_id": context.instance_id,
                 "langgraph_enabled": True,
                 "azure_openai_chat_completions_enabled": True,
+                "processing_timestamp": context.current_utc_datetime.isoformat(),
             },
         }
 
@@ -630,7 +632,7 @@ def process_blob(blob: func.InputStream):
                 "summary": result.get("summary", ""),
                 # Note: parsed_data excluded from metadata to reduce size
                 "token_usage": result.get("token_usage", {}),
-                "ragas_scores": result.get("ragas_scores", {}),
+                "claim_verification": result.get("claim_verification", {}),
                 "workflow_info": result.get("workflow_info", {}),
                 "processing_timestamp": datetime.now(timezone.utc).isoformat(),
             }
@@ -653,6 +655,7 @@ def process_blob(blob: func.InputStream):
                 "metadata_blob": f"results/{result_blob_name}",
                 "original_text": final_state.get("text", ""),
                 "enhanced_text": final_state.get("enhanced_text", ""),
+                "pdf_base64": final_state.get("pdf_content", ""),
                 "title": final_state.get("title", ""),
                 "summary": final_state.get("summary", ""),
                 "synonyms_found": len(final_state.get("synonyms", {})),

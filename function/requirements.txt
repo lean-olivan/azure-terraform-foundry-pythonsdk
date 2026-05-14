@@ -13,5 +13,3 @@ python-docx>=1.1.0
 openpyxl>=3.1.0
 pandas>=2.0.0
 openai>=1.0.0
-ragas>=0.1.0
-datasets>=2.14.0

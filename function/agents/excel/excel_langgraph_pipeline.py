@@ -11,14 +11,14 @@ from langgraph.graph import StateGraph, END
 # Import Excel-specific agents
 from .parse_excel_agent import parse_excel_agent, ExcelAgentState
 from .analyze_excel_agent import analyze_excel_agent
-from .evaluate_ragas_agent import evaluate_ragas_agent
+from .verify_claims_agent import verify_claims_agent
 
 
 # ============================================================================
 # Constants
 # ============================================================================
 
-PIPELINE_VERSION = "1.0"
+PIPELINE_VERSION = "1.2"
 WORKFLOW_TYPE = "excel_langgraph_pipeline"
 
 
@@ -37,6 +37,7 @@ def run_excel_langgraph_pipeline(
     multiple specialized agents:
     1. parse_excel: Extract structured data and text from Excel file
     2. analyze_excel: Use Azure OpenAI to generate title and summary
+    3. verify_claims: Run Claim-Level Verification (LLM-as-judge) on the generated analysis
     
     Args:
         excel_content: Raw bytes of the Excel file
@@ -77,7 +78,7 @@ def create_excel_workflow() -> StateGraph:
     Defines the workflow structure:
     - Entry Point: parse_excel (extract data from Excel)
     - Next Node: analyze_excel (generate AI analysis)
-    - Next Node: evaluate_ragas (evaluate quality with RAGAS metrics)
+    - Next Node: verify_claims (Claim-Level Verification via LLM-as-judge)
     - End: Return final results
     
     Returns:
@@ -87,26 +88,15 @@ def create_excel_workflow() -> StateGraph:
     workflow = StateGraph(ExcelAgentState)
     
     # Add processing nodes (agents)
-
-    # input -> uri del blob
-
     workflow.add_node("parse_excel", parse_excel_agent)
-
     workflow.add_node("analyze_excel", analyze_excel_agent)
-
-    workflow.add_node("evaluate_ragas", evaluate_ragas_agent)
-
-
-    # input -> uri del blob
-    # {id, timestap ...} -> bypass
+    workflow.add_node("verify_claims", verify_claims_agent)
 
     # Define the execution flow
     workflow.set_entry_point("parse_excel")
     workflow.add_edge("parse_excel", "analyze_excel")
-    workflow.add_edge("analyze_excel", "evaluate_ragas")
-    workflow.add_edge("evaluate_ragas", END)
-
-    # output -> json con title/summaru/ragas
+    workflow.add_edge("analyze_excel", "verify_claims")
+    workflow.add_edge("verify_claims", END)
     
     # Compile and return the workflow
     return workflow.compile()
@@ -138,7 +128,7 @@ def _create_initial_state(excel_content: bytes, filename: str) -> ExcelAgentStat
         token_usage={},
         excel_content=excel_content,
         filename=filename,
-        ragas_scores={}
+        claim_verification={},
     )
 
 
@@ -162,16 +152,16 @@ def _prepare_success_response(result: ExcelAgentState, filename: str) -> Dict[st
         "filename": filename,
         "title": result.get("title", ""),
         "summary": result.get("summary", ""),
+        "extracted_text": result.get("text", ""),
         "parsed_data": result.get("parsed_data", {}),
         "token_usage": result.get("token_usage", {}),
-        "ragas_scores": result.get("ragas_scores", {}),
+        "claim_verification": result.get("claim_verification", {}),
         "workflow_info": {
-            "agents_used": ["parse_excel", "analyze_excel", "evaluate_ragas"],
+            "agents_used": ["parse_excel", "analyze_excel", "verify_claims"],
             "workflow_type": WORKFLOW_TYPE,
             "version": PIPELINE_VERSION,
             "langgraph_enabled": True,
             "azure_openai_enabled": True,
-            "ragas_enabled": True,
             "processing_timestamp": _get_current_timestamp()
         }
     }
@@ -199,7 +189,7 @@ def _prepare_error_response(error: Exception, filename: str) -> Dict[str, Any]:
         "parsed_data": {"error": error_message},
         "token_usage": {},
         "workflow_info": {
-            "agents_used": ["parse_excel", "analyze_excel"],
+            "agents_used": ["parse_excel", "analyze_excel", "verify_claims"],
             "workflow_type": WORKFLOW_TYPE,
             "version": PIPELINE_VERSION,
             "langgraph_enabled": True,

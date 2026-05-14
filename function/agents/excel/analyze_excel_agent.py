@@ -6,25 +6,10 @@ Analyzes Excel content using Azure OpenAI to generate meaningful titles and summ
 import logging
 import os
 import json
-from typing import TypedDict, Dict, Any, Optional
+from typing import Dict, Any
 
-
-# ============================================================================
-# State Definition
-# ============================================================================
-
-class ExcelAgentState(TypedDict):
-    """State structure for Excel processing pipeline"""
-    text: str
-    parsed_data: dict
-    synonyms: dict
-    title: str
-    summary: str
-    enhanced_text: str
-    pdf_content: str
-    token_usage: dict
-    excel_content: bytes
-    filename: str
+# ExcelAgentState is the single source of truth defined in parse_excel_agent
+from .parse_excel_agent import ExcelAgentState
 
 
 # ============================================================================
@@ -39,6 +24,51 @@ MAX_TEXT_LENGTH = 2000
 SYSTEM_PROMPT = (
     "You are a professional document analyst that creates concise titles "
     "and summaries for Excel files. Return only valid JSON format."
+)
+
+# ============================================================================
+# Reference Document Context: ASC 805 Business Combinations
+# ============================================================================
+
+def _load_reference_document(filename: str) -> str:
+    """
+    Load a reference document from the .local directory to use as LLM context.
+
+    Searches for the file relative to the project root. Returns an empty
+    string with a warning if the file is not found.
+
+    Args:
+        filename: Name of the markdown file inside the .local/ directory
+
+    Returns:
+        File contents as a string, or empty string if not found
+    """
+    # Resolve path relative to this file's location (project root/.local/)
+    # __file__ is at: <project_root>/function/agents/excel/analyze_excel_agent.py
+    # dirname x1 -> function/agents/excel/
+    # dirname x2 -> function/agents/
+    # dirname x3 -> function/
+    # dirname x4 -> <project_root>/
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    filepath = os.path.join(base_dir, ".local", filename)
+
+    if not os.path.exists(filepath):
+        logging.warning(f"Reference document not found: {filepath}")
+        return ""
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+        logging.info(f"Loaded reference document: {filename} ({len(content)} chars)")
+        return content
+    except Exception as e:
+        logging.error(f"Failed to load reference document '{filename}': {e}")
+        return ""
+
+
+# Load ASC 805 reference document from .local/ at module import time
+ASC_805_REFERENCE_CONTEXT = _load_reference_document(
+    "Business_Combinations_Analysis_ASC805.md"
 )
 
 
@@ -161,6 +191,9 @@ def _analyze_with_openai(
     """
     Analyze Excel content using Azure OpenAI API.
 
+    Uses ASC 805 Business Combinations reference document as context to
+    provide domain-specific analysis for financial/audit-related Excel files.
+
     Args:
         client: Azure OpenAI client instance
         model: Model deployment name
@@ -174,11 +207,18 @@ def _analyze_with_openai(
     # Create the analysis prompt
     prompt = _create_analysis_prompt(parsed_data, text, filename)
 
-    # Call OpenAI API
+    # Call OpenAI API with ASC 805 reference context injected into system prompt
+    system_prompt_with_context = (
+        SYSTEM_PROMPT + "\n\n"
+        "Use the following reference document for domain context when analyzing "
+        "business combination, acquisition, or audit-related Excel files:\n"
+        + ASC_805_REFERENCE_CONTEXT
+    )
+
     response = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt_with_context},
             {"role": "user", "content": prompt}
         ],
         max_completion_tokens=MAX_COMPLETION_TOKENS,

@@ -23,7 +23,6 @@ from .excel import (
     parse_excel_agent,
     ExcelAgentState,
     analyze_excel_agent,
-    evaluate_ragas_agent,
     run_excel_langgraph_pipeline,
 )
 
@@ -39,6 +38,5 @@ __all__ = [
     'parse_excel_agent',
     'ExcelAgentState',
     'analyze_excel_agent',
-    'evaluate_ragas_agent',
     'run_excel_langgraph_pipeline',
 ]
